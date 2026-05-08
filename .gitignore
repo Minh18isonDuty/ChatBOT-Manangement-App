@@ -10,3 +10,7 @@
 .env
 bots.db
 __pycache__/
+.kotlin/
+.gradle/
+build/
+local.properties
