@@ -7,4 +7,6 @@
 /captures
 .externalNativeBuild
 .idea/
-.idea/
+.env
+bots.db
+__pycache__/
