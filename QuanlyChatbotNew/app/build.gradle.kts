@@ -58,4 +58,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+
+    // Thêm vào dependencies trong app/build.gradle.kts
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

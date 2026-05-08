@@ -8,6 +8,7 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.ViewModelProvider
 import com.ngocquanlychatbot.databinding.ActivityLoginBinding
 import com.ngocquanlychatbot.ui.bot.BotListActivity
+import com.ngocquanlychatbot.utils.SecurePrefs   // ← import helper mới
 
 class LoginActivity : AppCompatActivity() {
 
@@ -19,7 +20,6 @@ class LoginActivity : AppCompatActivity() {
         binding = ActivityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Khởi tạo ViewModel thủ công
         viewModel = ViewModelProvider(this)[AuthViewModel::class.java]
 
         setupObservers()
@@ -27,8 +27,9 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun setupObservers() {
+
         viewModel.isLoading.observe(this) { isLoading ->
-            binding.btnLogin.isEnabled = !isLoading
+            binding.btnLogin.isEnabled   = !isLoading
             binding.progressBar.isVisible = isLoading
         }
 
@@ -41,11 +42,11 @@ class LoginActivity : AppCompatActivity() {
 
         viewModel.loginSuccess.observe(this) { response ->
             response?.let {
-                val sharedPref = getSharedPreferences("auth_prefs", MODE_PRIVATE)
-                sharedPref.edit().putString("token", it.token).apply()
+                // FIX: dùng SecurePrefs thay vì SharedPreferences plain text
+                // Token được mã hóa AES-256-GCM trước khi lưu xuống disk
+                SecurePrefs.saveToken(this, it.token)
 
                 Toast.makeText(this, "Đăng nhập thành công!", Toast.LENGTH_SHORT).show()
-
                 startActivity(Intent(this, BotListActivity::class.java))
                 finish()
             }

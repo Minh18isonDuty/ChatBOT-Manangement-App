@@ -1,12 +1,18 @@
 # =====================================================
 # main.py - FastAPI chính cho AI Chatbot Admin
-# Version: 2.1 - Thêm Typing Indicator
+# Version: 2.2
+#   + Bước 2: Fallback mechanism (retry + message dự phòng)
+#   + Bước 3: Webhook signature verification (X-Hub-Signature-256)
 # =====================================================
 
 from fastapi import FastAPI, Request, Query, Depends, Header, HTTPException, status
 from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel as _BaseModel
 import requests
+import hashlib
+import hmac
+import time
 from typing import List
 
 from config import settings, get_admin_token, get_verify_token, get_max_turns
@@ -38,7 +44,7 @@ app = FastAPI(
     title=settings.APP_NAME,
     debug=settings.DEBUG,
     description="AI Chatbot Management API",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 
@@ -54,7 +60,6 @@ def on_startup():
 
 # =====================================================
 # CORS
-# ⚠️  allow_origins=["*"] chỉ dùng cho dev/demo
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
@@ -84,6 +89,50 @@ def verify_token(authorization: str = Header(None)) -> bool:
 
 
 # =====================================================
+# BƯỚC 3: WEBHOOK SIGNATURE VERIFICATION
+#
+# Tại sao cần:
+#   Không verify → bất kỳ ai cũng có thể POST vào /webhook
+#   giả mạo Facebook, khiến bot trả lời tin nhắn giả.
+#
+# Cách hoạt động:
+#   Facebook gửi header X-Hub-Signature-256 = "sha256=<hash>"
+#   Hash được tính bằng HMAC-SHA256 của request body
+#   với App Secret là key.
+#   Server tính lại hash → so sánh → nếu khớp thì hợp lệ.
+#
+# Quan trọng: dùng hmac.compare_digest() thay vì ==
+#   để chống timing attack.
+# =====================================================
+def verify_facebook_signature(request_body: bytes, signature_header: str) -> bool:
+    """
+    Xác thực chữ ký X-Hub-Signature-256 từ Facebook.
+
+    Args:
+        request_body:      Raw bytes của request body
+        signature_header:  Giá trị header X-Hub-Signature-256
+
+    Returns:
+        True nếu hợp lệ, False nếu không
+    """
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+
+    # Lấy hash Facebook gửi
+    facebook_hash = signature_header[len("sha256="):]
+
+    # Tính lại hash từ body với App Secret
+    expected_hash = hmac.new(
+        key=settings.FACEBOOK_APP_SECRET.encode("utf-8"),
+        msg=request_body,
+        digestmod=hashlib.sha256
+    ).hexdigest()
+
+    # So sánh constant-time để chống timing attack
+    return hmac.compare_digest(expected_hash, facebook_hash)
+
+
+# =====================================================
 # FACEBOOK HELPERS
 # =====================================================
 def _send_facebook_message(page_token: str, recipient_id: str, text: str):
@@ -107,16 +156,8 @@ def _send_facebook_message(page_token: str, recipient_id: str, text: str):
 def _send_typing_action(page_token: str, recipient_id: str, action: str = "typing_on"):
     """
     Gửi typing indicator về Facebook.
-
-    action options:
-      "typing_on"  → hiện dấu "..." trong chat của user
-      "typing_off" → tắt dấu "..."
-      "mark_seen"  → đánh dấu đã xem tin nhắn
-
-    Lưu ý:
-      - Facebook tự tắt typing_on sau 20 giây nếu không gọi typing_off
-      - Nên gọi typing_off ngay sau khi có reply để UX mượt hơn
-      - Fail silently — không ảnh hưởng đến luồng chính
+    action: "typing_on" | "typing_off" | "mark_seen"
+    Fail silently — không ảnh hưởng luồng chính.
     """
     try:
         requests.post(
@@ -126,27 +167,54 @@ def _send_typing_action(page_token: str, recipient_id: str, action: str = "typin
                 "recipient":     {"id": recipient_id},
                 "sender_action": action
             },
-            timeout=5   # timeout ngắn — không block luồng chính
+            timeout=5
         )
     except Exception as e:
-        # Typing indicator fail không được crash webhook handler
         print(f"⚠️  [Typing] {action} failed: {e}")
 
 
 # =====================================================
-# AI HELPER
+# BƯỚC 2: AI HELPER VỚI FALLBACK MECHANISM
+#
+# Vấn đề cũ:
+#   Ollama timeout hoặc lỗi → bot im lặng hoàn toàn
+#   → user không biết có chuyện gì → trải nghiệm tệ
+#
+# Giải pháp:
+#   1. Retry tối đa MAX_RETRIES lần với delay tăng dần
+#   2. Nếu vẫn fail → trả về fallback message thân thiện
+#   3. Vẫn lưu tin nhắn user vào DB dù AI fail
+#      → lịch sử chat không bị mất
 # =====================================================
+MAX_RETRIES  = 2       # Số lần retry khi AI fail
+RETRY_DELAY  = 1.5     # Giây chờ giữa các lần retry
+
+FALLBACK_MESSAGES = [
+    "Xin lỗi, mình đang bận xử lý nhiều yêu cầu. Bạn có thể nhắn lại sau 1-2 phút không ạ? 🙏",
+    "Hệ thống đang tạm thời quá tải. Mình sẽ trả lời bạn sớm nhất có thể!",
+    "Xin lỗi vì sự bất tiện này! Bạn vui lòng thử lại sau ít phút nhé. 😊"
+]
+
+_fallback_index = 0  # Xoay vòng fallback messages
+
+
+def _get_fallback_message() -> str:
+    """Lấy fallback message theo vòng để không lặp lại liên tục."""
+    global _fallback_index
+    msg = FALLBACK_MESSAGES[_fallback_index % len(FALLBACK_MESSAGES)]
+    _fallback_index += 1
+    return msg
+
+
 def build_messages(system_prompt: str, context: list, user_text: str) -> list:
     """
     Build messages array theo chuẩn Ollama /api/chat.
     Lấy context từ DB → bot nhớ lịch sử hội thoại.
     """
     messages = [{"role": "system", "content": system_prompt.strip()}]
-
     for item in context:
         role = "user" if item["is_from_user"] == 1 else "assistant"
         messages.append({"role": role, "content": item["message"]})
-
     messages.append({"role": "user", "content": user_text})
     return messages
 
@@ -158,37 +226,73 @@ def ask_ai(
     sender_id: str
 ) -> str:
     """
-    Gọi Ollama /api/chat và lưu kết quả vào DB.
+    Gọi Ollama API với retry logic và fallback mechanism.
 
-    Dùng /api/chat (không phải /api/generate) để:
-    - Hỗ trợ multi-turn conversation natively
-    - Model hiểu rõ role system/user/assistant
+    Flow:
+      1. Lấy context từ DB
+      2. Thử gọi Ollama tối đa MAX_RETRIES lần
+      3. Nếu thành công → lưu DB → trả về answer
+      4. Nếu vẫn fail sau retry → lưu user message → trả về fallback
     """
     context  = get_recent_context(page_id=page_id, sender_id=sender_id, limit=get_max_turns())
     messages = build_messages(system_prompt, context, user_text)
 
-    try:
-        response = requests.post(
-            settings.OLLAMA_URL,
-            json={"model": settings.OLLAMA_MODEL, "messages": messages, "stream": False},
-            timeout=90
-        )
-        response.raise_for_status()
-        answer = response.json().get("message", {}).get("content", "").strip()
-        if not answer:
-            answer = "Xin lỗi, tôi chưa hiểu câu hỏi của bạn."
+    answer   = None
+    last_err = None
 
-    except requests.Timeout:
-        print("⚠️  [AI] Timeout")
-        answer = "Xin lỗi, hệ thống đang bận. Vui lòng thử lại sau."
-    except Exception as e:
-        print(f"❌ [AI Error] {e}")
-        answer = "Xin lỗi, chatbot đang gặp vấn đề kỹ thuật."
+    # ── Retry loop ────────────────────────────────────
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"🤖 [AI] Attempt {attempt}/{MAX_RETRIES}...")
 
+            response = requests.post(
+                settings.OLLAMA_URL,
+                json={
+                    "model":    settings.OLLAMA_MODEL,
+                    "messages": messages,
+                    "stream":   False
+                },
+                timeout=settings.OLLAMA_TIMEOUT
+            )
+            response.raise_for_status()
+
+            answer = response.json().get("message", {}).get("content", "").strip()
+
+            if answer:
+                print(f"✅ [AI] Success on attempt {attempt}")
+                break   # Thành công → thoát loop
+            else:
+                print(f"⚠️  [AI] Empty response on attempt {attempt}")
+
+        except requests.Timeout:
+            last_err = f"Timeout (attempt {attempt})"
+            print(f"⚠️  [AI] {last_err}")
+        except requests.ConnectionError:
+            last_err = f"Ollama không chạy hoặc không kết nối được (attempt {attempt})"
+            print(f"❌ [AI] {last_err}")
+            break   # Connection error → không retry vì sẽ fail giống nhau
+        except Exception as e:
+            last_err = str(e)
+            print(f"❌ [AI] Error attempt {attempt}: {e}")
+
+        # Delay trước lần retry tiếp theo (không delay sau lần cuối)
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
+
+    # ── Lưu vào DB ────────────────────────────────────
+    # Luôn lưu tin nhắn user dù AI có fail hay không
     save_message(page_id, sender_id, user_text, is_from_user=1)
-    save_message(page_id, "bot",       answer,   is_from_user=0)
 
-    return answer
+    if answer:
+        # AI thành công → lưu reply thật
+        save_message(page_id, "bot", answer, is_from_user=0)
+        return answer
+    else:
+        # AI fail → dùng fallback, vẫn lưu vào DB
+        fallback = _get_fallback_message()
+        save_message(page_id, "bot", fallback, is_from_user=0)
+        print(f"⚠️  [AI] All retries failed. Last error: {last_err}. Using fallback.")
+        return fallback
 
 
 # =====================================================
@@ -211,19 +315,41 @@ async def receive_message(request: Request):
     """
     Nhận và xử lý tin nhắn từ Facebook Messenger.
 
-    Flow đầy đủ với typing indicator:
-      1. Nhận webhook từ Facebook
-      2. Validate bot còn active
-      3. Gửi typing_on  → user thấy "..."
-      4. Gọi AI (3-10s)
-      5. Gửi typing_off → tắt "..."
-      6. Gửi reply      → user nhận câu trả lời
+    Flow đầy đủ:
+      1. Đọc raw body (cần để verify signature)
+      2. BƯỚC 3: Verify X-Hub-Signature-256
+      3. Parse JSON
+      4. Tìm bot, check active
+      5. Typing on → AI (với retry) → Typing off → Reply
     """
+    # ── Đọc raw body trước khi parse JSON ─────────────
+    # Quan trọng: phải đọc body dưới dạng bytes để verify signature
+    body_bytes = await request.body()
+
+    # ── BƯỚC 3: Verify Facebook signature ─────────────
+    signature = request.headers.get("X-Hub-Signature-256", "")
+
+    # Chỉ verify khi đã cấu hình FACEBOOK_APP_SECRET
+    if settings.FACEBOOK_APP_SECRET:
+        if not verify_facebook_signature(body_bytes, signature):
+            print(f"❌ [Webhook] Invalid signature — possible spoofed request")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid webhook signature"
+            )
+    else:
+        # Chưa config App Secret → warning nhưng vẫn xử lý (dev mode)
+        print("⚠️  [Webhook] FACEBOOK_APP_SECRET chưa được cấu hình — bỏ qua verify signature")
+
+    # ── Parse JSON ────────────────────────────────────
     try:
-        data = await request.json()
+        data = request.json() if hasattr(request, '_json') else None
+        import json
+        data = json.loads(body_bytes)
     except Exception:
         return JSONResponse(content={"status": "invalid_json"}, status_code=400)
 
+    # ── Xử lý từng entry ──────────────────────────────
     for entry in data.get("entry", []):
         page_id = entry.get("id")
         if not page_id:
@@ -243,71 +369,41 @@ async def receive_message(request: Request):
             if not text:
                 continue
 
-            # Bỏ qua echo message (page tự gửi)
             if messaging.get("message", {}).get("is_echo"):
                 continue
 
-            # ── Bước 1: Đánh dấu đã xem ──────────────
+            # ── Typing flow ───────────────────────────
             _send_typing_action(bot["page_token"], sender_id, "mark_seen")
-
-            # ── Bước 2: Hiện "đang nhập..." ───────────
             _send_typing_action(bot["page_token"], sender_id, "typing_on")
 
-            # ── Bước 3: Gọi AI ────────────────────────
-            try:
-                reply = ask_ai(
-                    system_prompt=bot["system_prompt"],
-                    user_text=text,
-                    page_id=page_id,
-                    sender_id=sender_id
-                )
-            except Exception as e:
-                print(f"❌ [Webhook] AI error: {e}")
-                reply = "Xin lỗi, chatbot đang gặp vấn đề."
-
-            # ── Bước 4: Tắt "đang nhập..." ───────────
-            _send_typing_action(bot["page_token"], sender_id, "typing_off")
-
-            # ── Bước 5: Gửi reply ─────────────────────
-            _send_facebook_message(
-                page_token=bot["page_token"],
-                recipient_id=sender_id,
-                text=reply
+            # ── Gọi AI với retry + fallback ───────────
+            reply = ask_ai(
+                system_prompt=bot["system_prompt"],
+                user_text=text,
+                page_id=page_id,
+                sender_id=sender_id
             )
+
+            _send_typing_action(bot["page_token"], sender_id, "typing_off")
+            _send_facebook_message(bot["page_token"], sender_id, reply)
 
     return JSONResponse(content={"status": "ok"})
 
 
 # =====================================================
-# TYPING INDICATOR ENDPOINT (trigger thủ công)
-# Dùng để test hoặc trigger từ admin Android app
+# TYPING ENDPOINT (trigger thủ công từ admin app)
 # =====================================================
-class TypingPayload(BaseModel if False else object):
-    pass
-
-from pydantic import BaseModel as _BaseModel
-
 class TypingPayload(_BaseModel):
     recipient_id: str
     is_typing:    bool
 
 @app.post("/bots/{bot_id}/typing", response_model=MessageResponse)
-def trigger_typing(
-    bot_id:  int,
-    payload: TypingPayload,
-    auth:    bool = Depends(verify_token)
-):
-    """
-    Trigger typing indicator thủ công từ admin app.
-    Thường dùng để test — trong production tự động chạy trong webhook.
-    """
+def trigger_typing(bot_id: int, payload: TypingPayload, auth: bool = Depends(verify_token)):
     bot = get_bot_by_id(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot không tồn tại")
-
     action = "typing_on" if payload.is_typing else "typing_off"
     _send_typing_action(bot["page_token"], payload.recipient_id, action)
-
     return MessageResponse(message=f"Đã gửi {action} tới {payload.recipient_id}")
 
 
@@ -356,10 +452,7 @@ def create_bot_endpoint(bot: BotCreate, auth: bool = Depends(verify_token)):
 def update_bot_endpoint(bot_id: int, data: BotUpdate, auth: bool = Depends(verify_token)):
     success = update_bot(bot_id=bot_id, is_active=data.is_active)
     if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bot không tồn tại hoặc không có thay đổi"
-        )
+        raise HTTPException(status_code=404, detail="Bot không tồn tại hoặc không có thay đổi")
     return MessageResponse(message="Cập nhật bot thành công")
 
 
@@ -379,7 +472,6 @@ def get_bot_history(bot_id: int, auth: bool = Depends(verify_token)):
     bot = get_bot_by_id(bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot không tồn tại")
-
     messages = get_chat_history(bot["page_id"], limit=50)
     return ChatHistoryResponse(page_id=bot["page_id"], messages=messages)
 
@@ -392,5 +484,5 @@ def root():
     return {
         "status":  "success",
         "message": f"{settings.APP_NAME} is running",
-        "version": "2.1.0"
+        "version": "2.2.0"
     }

@@ -11,24 +11,29 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ngocquanlychatbot.data.repository.BotRepository
 import com.ngocquanlychatbot.databinding.ActivityChatHistoryBinding
 import com.ngocquanlychatbot.ui.auth.LoginActivity
+import com.ngocquanlychatbot.utils.SecurePrefs   // ← import helper mới
 
 class ChatHistoryActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityChatHistoryBinding
     private lateinit var adapter: ChatHistoryAdapter
     private lateinit var viewModel: BotViewModel
-    private lateinit var layoutManager: LinearLayoutManager
 
-    private var botId: Int = -1
+    private val layoutManager by lazy {
+        LinearLayoutManager(this).apply { stackFromEnd = true }
+    }
+
+    private var botId: Int    = -1
     private var botName: String = ""
-    private var token: String? = null
+    private var token: String?  = null
 
-    // Pagination
+    // Pagination state
     private var isLoadingMore = false
-    private var hasMoreData = true
+    private var hasMoreData   = true
     private var currentOffset = 0
-    private val pageSize = 30
+    private val pageSize      = 30
 
+    // ── Lifecycle ─────────────────────────────────────
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityChatHistoryBinding.inflate(layoutInflater)
@@ -36,21 +41,12 @@ class ChatHistoryActivity : AppCompatActivity() {
 
         botId   = intent.getIntExtra("BOT_ID", -1)
         botName = intent.getStringExtra("BOT_NAME") ?: "Lịch sử chat"
-        token   = getSharedPreferences("auth_prefs", MODE_PRIVATE).getString("token", null)
 
-        // Guard: không có bot ID
-        if (botId == -1) {
-            showToast("Không tìm thấy thông tin bot")
-            finish()
-            return
-        }
+        // FIX: đọc token từ SecurePrefs thay vì SharedPreferences plain text
+        token = SecurePrefs.getToken(this)
 
-        // Guard: không có token → về Login
-        if (token == null) {
-            showToast("Phiên đăng nhập đã hết hạn")
-            goToLogin()
-            return
-        }
+        if (botId == -1)   { showToast("Không tìm thấy thông tin bot"); finish(); return }
+        if (token == null) { showToast("Phiên đăng nhập đã hết hạn"); goToLogin(); return }
 
         viewModel = ViewModelProvider(
             this,
@@ -60,8 +56,8 @@ class ChatHistoryActivity : AppCompatActivity() {
         setupToolbar()
         setupRecyclerView()
         setupSwipeRefresh()
+        setupRetryButton()
         observeViewModel()
-
         loadChatHistory()
     }
 
@@ -75,24 +71,19 @@ class ChatHistoryActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener { finish() }
     }
 
-    // ── RecyclerView + Pagination ──────────────────────
+    // ── RecyclerView ──────────────────────────────────
     private fun setupRecyclerView() {
         adapter = ChatHistoryAdapter()
-        layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
 
         binding.recyclerViewChat.apply {
             this.layoutManager = this@ChatHistoryActivity.layoutManager
-            adapter = this@ChatHistoryActivity.adapter
+            adapter            = this@ChatHistoryActivity.adapter
 
-            // Load thêm khi scroll lên đầu (pagination)
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                    super.onScrolled(recyclerView, dx, dy)
-
-                    val firstVisible = layoutManager.findFirstVisibleItemPosition()
-
-                    // Khi scroll đến gần đầu danh sách → load thêm
-                    if (firstVisible <= 3 && !isLoadingMore && hasMoreData) {
+                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                    val firstVisible = this@ChatHistoryActivity.layoutManager
+                        .findFirstVisibleItemPosition()
+                    if (dy < 0 && firstVisible <= 3 && !isLoadingMore && hasMoreData) {
                         loadMoreHistory()
                     }
                 }
@@ -100,95 +91,91 @@ class ChatHistoryActivity : AppCompatActivity() {
         }
     }
 
-    // ── Swipe to refresh ──────────────────────────────
+    // ── Swipe Refresh ─────────────────────────────────
     private fun setupSwipeRefresh() {
-        binding.swipeRefreshLayout?.setOnRefreshListener {
-            resetAndReload()
+        binding.swipeRefreshLayout.setOnRefreshListener { resetAndReload() }
+    }
+
+    // ── Retry ─────────────────────────────────────────
+    private fun setupRetryButton() {
+        binding.btnRetry.setOnClickListener {
+            binding.layoutErrorChat.isVisible = false
+            loadChatHistory()
         }
     }
 
-    // ── Observe ViewModel ─────────────────────────────
+    // ── Observe ───────────────────────────────────────
     private fun observeViewModel() {
 
         viewModel.chatHistory.observe(this) { history ->
             val messages = history.messages
 
-            // Empty state
-            binding.layoutEmptyChat.isVisible = messages.isEmpty()
+            binding.layoutEmptyChat.isVisible  = messages.isEmpty()
+            binding.layoutErrorChat.isVisible  = false
             binding.recyclerViewChat.isVisible = messages.isNotEmpty()
 
             adapter.submitList(messages) {
-                // Scroll xuống cuối sau khi load lần đầu
                 if (currentOffset == 0 && messages.isNotEmpty()) {
                     binding.recyclerViewChat.scrollToPosition(messages.size - 1)
                 }
             }
 
-            // Nếu trả về ít hơn pageSize → không còn data cũ hơn
-            hasMoreData = messages.size >= pageSize
-            isLoadingMore = false
-            binding.progressBarTop?.isVisible = false
+            hasMoreData                      = messages.size >= pageSize
+            isLoadingMore                    = false
+            binding.progressBarTop.isVisible = false
         }
 
         viewModel.isLoading.observe(this) { isLoading ->
-            // ProgressBar trung tâm chỉ hiện khi load lần đầu
-            binding.progressBar?.isVisible = isLoading && currentOffset == 0
-            binding.swipeRefreshLayout?.isRefreshing = false
+            binding.progressBar.isVisible           = isLoading && currentOffset == 0
+            binding.swipeRefreshLayout.isRefreshing = false
         }
 
         viewModel.errorMessage.observe(this) { error ->
             error ?: return@observe
 
-            // Token hết hạn → về Login
             if (error.contains("401") || error.contains("Unauthorized", ignoreCase = true)) {
                 showToast("Phiên đăng nhập đã hết hạn")
                 goToLogin()
-            } else {
-                showToast(error)
+                return@observe
             }
 
-            // Hiện error state nếu chưa có data
-            val isEmpty = adapter.currentList.isEmpty()
-            binding.layoutErrorChat?.isVisible = isEmpty
-            binding.recyclerViewChat.isVisible = !isEmpty
+            showToast(error)
 
-            isLoadingMore = false
-            binding.progressBarTop?.isVisible = false
+            val isEmpty = adapter.currentList.isEmpty()
+            binding.layoutErrorChat.isVisible  = isEmpty
+            binding.recyclerViewChat.isVisible = !isEmpty
+            isLoadingMore                      = false
+            binding.progressBarTop.isVisible   = false
             viewModel.clearMessages()
         }
     }
 
     // ── Load data ─────────────────────────────────────
-
-    /** Load lần đầu hoặc sau khi refresh */
     private fun loadChatHistory() {
         currentOffset = 0
-        hasMoreData = true
+        hasMoreData   = true
         viewModel.getChatHistory(token!!, botId)
     }
 
-    /** Load thêm tin nhắn cũ hơn khi scroll lên đầu */
     private fun loadMoreHistory() {
         if (!hasMoreData || isLoadingMore) return
-        isLoadingMore = true
-        currentOffset += pageSize
-        binding.progressBarTop?.isVisible = true
-        // Gọi cùng hàm — ViewModel sẽ append nếu offset > 0
-        // (cần mở rộng ViewModel/API nếu muốn true pagination)
+        isLoadingMore             = true
+        currentOffset            += pageSize
+        binding.progressBarTop.isVisible = true
         viewModel.getChatHistory(token!!, botId)
     }
 
-    /** Reset state và reload từ đầu */
     private fun resetAndReload() {
         currentOffset = 0
-        hasMoreData = true
+        hasMoreData   = true
         isLoadingMore = false
         loadChatHistory()
     }
 
     // ── Navigation ────────────────────────────────────
     private fun goToLogin() {
-        getSharedPreferences("auth_prefs", MODE_PRIVATE).edit().clear().apply()
+        // FIX: xóa secure prefs thay vì plain SharedPreferences
+        SecurePrefs.clear(this)
         startActivity(Intent(this, LoginActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         })
@@ -199,23 +186,11 @@ class ChatHistoryActivity : AppCompatActivity() {
     private fun showToast(msg: String) =
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
-    // ── Retry button (nếu có trong layout) ───────────
-    private fun setupRetryButton() {
-        binding.btnRetry?.setOnClickListener {
-            binding.layoutErrorChat?.isVisible = false
-            loadChatHistory()
-        }
-    }
-
-    // ── Companion ─────────────────────────────────────
     companion object {
-        fun newIntent(
-            context: android.content.Context,
-            botId: Int,
-            botName: String
-        ): Intent = Intent(context, ChatHistoryActivity::class.java).apply {
-            putExtra("BOT_ID", botId)
-            putExtra("BOT_NAME", botName)
-        }
+        fun newIntent(context: android.content.Context, botId: Int, botName: String): Intent =
+            Intent(context, ChatHistoryActivity::class.java).apply {
+                putExtra("BOT_ID",   botId)
+                putExtra("BOT_NAME", botName)
+            }
     }
 }

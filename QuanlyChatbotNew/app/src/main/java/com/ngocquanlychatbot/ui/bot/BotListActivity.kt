@@ -9,18 +9,17 @@ import androidx.appcompat.widget.SearchView
 import androidx.core.view.isVisible
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.ngocquanlychatbot.R
 import com.ngocquanlychatbot.data.model.Bot
 import com.ngocquanlychatbot.data.repository.BotRepository
 import com.ngocquanlychatbot.databinding.ActivityBotListBinding
 import com.ngocquanlychatbot.ui.auth.LoginActivity
 import com.ngocquanlychatbot.ui.bot.dialog.CreateBotDialog
+import com.ngocquanlychatbot.utils.SecurePrefs  // ← import SecurePrefs
 
 class BotListActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityBotListBinding
     private lateinit var adapter: BotAdapter
-
     private lateinit var viewModel: BotViewModel
 
     private var currentToken: String? = null
@@ -31,6 +30,7 @@ class BotListActivity : AppCompatActivity() {
         binding = ActivityBotListBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // FIX: đọc token từ SecurePrefs thay vì SharedPreferences plain text
         currentToken = getToken()
 
         viewModel = ViewModelProvider(
@@ -44,25 +44,19 @@ class BotListActivity : AppCompatActivity() {
         setupFab()
         observeViewModel()
 
-        if (currentToken.isNullOrEmpty()) {
-            goToLogin()
-        } else {
-            loadBots()
-        }
+        if (currentToken.isNullOrEmpty()) goToLogin() else loadBots()
     }
 
+    // ── Toolbar ───────────────────────────────────────
     private fun setupToolbar() {
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(false)
         supportActionBar?.title = "Quản lý Chatbot"
 
-        binding.btnLogout.setOnClickListener {
-            showLogoutConfirmation()
-        }
+        binding.btnLogout.setOnClickListener { showLogoutConfirmation() }
 
         binding.searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
-            override fun onQueryTextSubmit(query: String?): Boolean = false
-
+            override fun onQueryTextSubmit(query: String?) = false
             override fun onQueryTextChange(newText: String?): Boolean {
                 filterBots(newText.orEmpty())
                 return true
@@ -70,71 +64,62 @@ class BotListActivity : AppCompatActivity() {
         })
     }
 
+    // ── RecyclerView ──────────────────────────────────
     private fun setupRecyclerView() {
         adapter = BotAdapter(
             onToggleClick = { bot, isChecked ->
                 currentToken?.let { token ->
-                    if (isChecked) {
-                        viewModel.toggleBot(token, bot)
-                    } else {
-                        showToggleConfirmation(bot, token)
-                    }
+                    if (isChecked) viewModel.toggleBot(token, bot)
+                    else showToggleConfirmation(bot, token)
                 }
             },
-            onDeleteClick = { bot ->
-                showDeleteConfirmation(bot)
-            },
-            onViewHistoryClick = { bot ->
-                openChatHistory(bot)
-            }
+            onDeleteClick  = { bot -> showDeleteConfirmation(bot) },
+            onViewHistoryClick = { bot -> openChatHistory(bot) }
         )
 
         binding.recyclerViewBots.apply {
             layoutManager = LinearLayoutManager(this@BotListActivity)
-            adapter = this@BotListActivity.adapter
+            adapter       = this@BotListActivity.adapter
         }
     }
 
+    // ── Swipe Refresh ─────────────────────────────────
     private fun setupSwipeRefresh() {
-        binding.swipeRefreshLayout.setOnRefreshListener {
-            loadBots()
-        }
+        binding.swipeRefreshLayout.setOnRefreshListener { loadBots() }
     }
 
+    // ── FAB ───────────────────────────────────────────
     private fun setupFab() {
         binding.fabAddBot.setOnClickListener {
-            val dialog = CreateBotDialog.newInstance()
-            dialog.setOnBotCreatedListener {
-                loadBots()
-            }
-            dialog.show(supportFragmentManager, "CreateBotDialog")
+            CreateBotDialog.newInstance().apply {
+                setOnBotCreatedListener { loadBots() }
+            }.show(supportFragmentManager, "CreateBotDialog")
         }
     }
 
+    // ── Observe ───────────────────────────────────────
     private fun observeViewModel() {
         viewModel.bots.observe(this) { bots ->
-            originalBotList = bots
+            originalBotList           = bots
             adapter.submitList(bots)
             binding.layoutEmpty.isVisible = bots.isEmpty()
         }
 
         viewModel.isLoading.observe(this) { isLoading ->
-            binding.progressBar.isVisible = isLoading
-            if (!isLoading) {
-                binding.swipeRefreshLayout.isRefreshing = false
-            }
+            binding.progressBar.isVisible           = isLoading
+            binding.swipeRefreshLayout.isRefreshing = isLoading && false
+            if (!isLoading) binding.swipeRefreshLayout.isRefreshing = false
         }
 
         viewModel.errorMessage.observe(this) { error ->
-            error?.let {
-                if (it.contains("401") || it.contains("Unauthorized", ignoreCase = true)) {
-                    Toast.makeText(this, "Phiên đăng nhập đã hết hạn", Toast.LENGTH_LONG).show()
-                    performLogout()
-                } else {
-                    Toast.makeText(this, it, Toast.LENGTH_LONG).show()
-                }
-                viewModel.clearMessages()
+            error ?: return@observe
+            if (error.contains("401") || error.contains("Unauthorized", ignoreCase = true)) {
+                Toast.makeText(this, "Phiên đăng nhập đã hết hạn", Toast.LENGTH_LONG).show()
+                performLogout()
+            } else {
+                Toast.makeText(this, error, Toast.LENGTH_LONG).show()
             }
+            viewModel.clearMessages()
         }
 
         viewModel.successMessage.observe(this) { message ->
@@ -145,42 +130,37 @@ class BotListActivity : AppCompatActivity() {
         }
     }
 
-    // ====================== TÌM KIẾM ======================
+    // ── Search ────────────────────────────────────────
     private fun filterBots(query: String) {
-        val filtered = if (query.isEmpty()) {
-            originalBotList
-        } else {
-            originalBotList.filter { bot ->
-                bot.name.contains(query, ignoreCase = true) ||
-                        bot.page_id.contains(query, ignoreCase = true)
+        adapter.submitList(
+            if (query.isEmpty()) originalBotList
+            else originalBotList.filter {
+                it.name.contains(query, ignoreCase = true) ||
+                        it.page_id.contains(query, ignoreCase = true)
             }
-        }
-        adapter.submitList(filtered)
+        )
     }
 
+    // ── Load ──────────────────────────────────────────
     private fun loadBots() {
-        currentToken?.let { token ->
-            viewModel.loadBots(token)
-        }
+        currentToken?.let { viewModel.loadBots(it) }
     }
 
-    // ====================== XEM LỊCH SỬ CHAT ======================
+    // ── Chat History ──────────────────────────────────
     private fun openChatHistory(bot: Bot) {
-        val intent = Intent(this, ChatHistoryActivity::class.java).apply {
-            putExtra("BOT_ID", bot.id)
+        startActivity(Intent(this, ChatHistoryActivity::class.java).apply {
+            putExtra("BOT_ID",   bot.id)
             putExtra("BOT_NAME", bot.name)
-            putExtra("PAGE_ID", bot.page_id)
-        }
-        startActivity(intent)
+            putExtra("PAGE_ID",  bot.page_id)
+        })
     }
 
+    // ── Dialogs ───────────────────────────────────────
     private fun showToggleConfirmation(bot: Bot, token: String) {
         AlertDialog.Builder(this)
             .setTitle("Xác nhận tắt bot")
             .setMessage("Bạn có chắc muốn tắt bot '${bot.name}' không?\n\nBot sẽ ngừng tự động trả lời tin nhắn.")
-            .setPositiveButton("Tắt bot") { _, _ ->
-                viewModel.toggleBot(token, bot)
-            }
+            .setPositiveButton("Tắt bot") { _, _ -> viewModel.toggleBot(token, bot) }
             .setNegativeButton("Hủy", null)
             .show()
     }
@@ -190,9 +170,7 @@ class BotListActivity : AppCompatActivity() {
             .setTitle("Xác nhận xóa")
             .setMessage("Bạn có chắc muốn xóa bot '${bot.name}' không?")
             .setPositiveButton("Xóa") { _, _ ->
-                currentToken?.let { token ->
-                    viewModel.deleteBot(token, bot.id, bot.name)
-                }
+                currentToken?.let { viewModel.deleteBot(it, bot.id, bot.name) }
             }
             .setNegativeButton("Hủy", null)
             .show()
@@ -202,33 +180,34 @@ class BotListActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Đăng xuất")
             .setMessage("Bạn có chắc muốn đăng xuất không?")
-            .setPositiveButton("Đăng xuất") { _, _ ->
-                performLogout()
-            }
+            .setPositiveButton("Đăng xuất") { _, _ -> performLogout() }
             .setNegativeButton("Hủy", null)
             .show()
     }
 
+    // ── Auth ──────────────────────────────────────────
     private fun performLogout() {
-        getSharedPreferences("auth_prefs", MODE_PRIVATE).edit().clear().apply()
+        // FIX: xóa SecurePrefs thay vì SharedPreferences plain text
+        SecurePrefs.clear(this)
         Toast.makeText(this, "Đã đăng xuất thành công", Toast.LENGTH_SHORT).show()
         goToLogin()
     }
 
     private fun goToLogin() {
-        startActivity(Intent(this, LoginActivity::class.java))
+        startActivity(Intent(this, LoginActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        })
         finish()
     }
 
     private fun getToken(): String? {
-        return getSharedPreferences("auth_prefs", MODE_PRIVATE)
-            .getString("token", null)
+        // FIX: đọc từ SecurePrefs thay vì SharedPreferences plain text
+        return SecurePrefs.getToken(this)
     }
 
+    // ── Lifecycle ─────────────────────────────────────
     override fun onResume() {
         super.onResume()
-        if (!currentToken.isNullOrEmpty()) {
-            loadBots()
-        }
+        if (!currentToken.isNullOrEmpty()) loadBots()
     }
 }
