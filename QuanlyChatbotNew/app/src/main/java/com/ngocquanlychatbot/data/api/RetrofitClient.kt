@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    private const val BASE_URL = "https://lorie-fumy-glynis.ngrok-free.dev/"   // ← Thay bằng URL ngrok của bạn nếu khác
+    private const val BASE_URL = "https://passion-margarita-clone.ngrok-free.dev/"   // ← Thay bằng URL ngrok của bạn nếu khác
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY

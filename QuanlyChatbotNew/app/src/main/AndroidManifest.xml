@@ -40,6 +40,10 @@
             android:name=".ui.bot.ChatHistoryActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.stats.BotStatsActivity"
+            android:exported="false" />
+
     </application>
 
 </manifest>

@@ -78,6 +78,16 @@
             android:gravity="end"
             android:layout_marginTop="12dp">
 
+            <ImageButton
+                android:id="@+id/btnStats"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@android:drawable/ic_menu_info_details"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                app:tint="#9C27B0"
+                android:contentDescription="Xem thống kê"
+                android:layout_marginEnd="8dp"/>
+
             <!-- Nút Xem lịch sử -->
             <ImageButton
                 android:id="@+id/btnViewHistory"

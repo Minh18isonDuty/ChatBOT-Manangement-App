@@ -14,6 +14,8 @@ import hashlib
 import hmac
 import time
 from typing import List
+from pydantic import BaseModel as _BM
+from typing import List as _L
 
 from config import settings, get_admin_token, get_verify_token, get_max_turns
 from schemas import (
@@ -34,6 +36,10 @@ from db import (
     get_bot_by_id,
     get_recent_context,
     verify_user,
+    get_stats_overview,      
+    get_messages_by_day,     
+    get_messages_by_hour,    
+    get_peak_hour,          
 )
 
 
@@ -486,3 +492,58 @@ def root():
         "message": f"{settings.APP_NAME} is running",
         "version": "2.2.0"
     }
+
+class StatsOverview(_BM):
+    total_messages: int
+    unique_users:   int
+    today_messages: int
+    user_messages:  int
+    bot_messages:   int
+
+class DailyCount(_BM):
+    date:  str
+    count: int
+
+class HourlyCount(_BM):
+    hour:  int
+    count: int
+
+class StatsResponse(_BM):
+    page_id:        str
+    overview:       StatsOverview
+    daily_7days:    _L[DailyCount]
+    hourly:         _L[HourlyCount]
+    peak_hour:      int
+    peak_count:     int
+
+@app.get("/bots/{bot_id}/stats", response_model=StatsResponse)
+def get_bot_stats(bot_id: int, auth: bool = Depends(verify_token)):
+    """
+    Thống kê toàn diện của một bot.
+    
+    Trả về:
+      - overview:    tổng tin nhắn, user unique, hôm nay
+      - daily_7days: tin nhắn mỗi ngày trong 7 ngày qua
+      - hourly:      phân bố theo giờ trong ngày
+      - peak_hour:   giờ cao điểm
+    
+    Dùng để vẽ dashboard thống kê trên Android app.
+    """
+    bot = get_bot_by_id(bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot không tồn tại")
+
+    page_id  = bot["page_id"]
+    overview = get_stats_overview(page_id)
+    daily    = get_messages_by_day(page_id, days=7)
+    hourly   = get_messages_by_hour(page_id)
+    peak     = get_peak_hour(page_id)
+
+    return StatsResponse(
+        page_id     = page_id,
+        overview    = StatsOverview(**overview),
+        daily_7days = [DailyCount(**d) for d in daily],
+        hourly      = [HourlyCount(**h) for h in hourly],
+        peak_hour   = peak["peak_hour"],
+        peak_count  = peak["count"]
+    )

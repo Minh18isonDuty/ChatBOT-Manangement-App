@@ -102,21 +102,24 @@ class BotRepository {
     }
 
     // =====================================================
+    // STATISTICS
+    // FIX: thêm hàm này — BotViewModel.getBotStats() gọi vào đây
+    // =====================================================
+    suspend fun getBotStats(token: String, botId: Int): Result<BotStatsResponse> {
+        return try {
+            val response = apiService.getBotStats("Bearer $token", botId)
+            if (response.isSuccessful && response.body() != null) {
+                Result.success(response.body()!!)
+            } else {
+                Result.failure(Exception("Không thể tải thống kê: ${response.code()}"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // =====================================================
     // TYPING INDICATOR
-    //
-    // Gọi endpoint này TRƯỚC khi AI trả lời để Facebook
-    // hiển thị "..." (đang nhập) trong hộp chat của user.
-    //
-    // Flow chuẩn:
-    //   1. Nhận tin nhắn từ user
-    //   2. sendTypingOn()  ← hiện "..."
-    //   3. Gọi AI (mất 3-10s)
-    //   4. sendTypingOff() ← tắt "..."  (tự tắt sau 20s nếu quên)
-    //   5. Gửi reply
-    //
-    // Lưu ý: typing indicator được điều khiển từ BACKEND
-    // (FastAPI → Facebook Graph API), không phải từ Android.
-    // Repository này chỉ cung cấp hàm trigger backend.
     // =====================================================
     suspend fun sendTypingIndicator(
         token: String,
@@ -136,7 +139,6 @@ class BotRepository {
             if (response.isSuccessful) {
                 Result.success(Unit)
             } else {
-                // Typing indicator fail không nên crash app → log và bỏ qua
                 Result.failure(Exception("Typing indicator thất bại: ${response.code()}"))
             }
         } catch (e: Exception) {

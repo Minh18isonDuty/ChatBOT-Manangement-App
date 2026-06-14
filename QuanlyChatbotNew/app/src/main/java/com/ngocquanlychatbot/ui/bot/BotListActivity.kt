@@ -14,7 +14,8 @@ import com.ngocquanlychatbot.data.repository.BotRepository
 import com.ngocquanlychatbot.databinding.ActivityBotListBinding
 import com.ngocquanlychatbot.ui.auth.LoginActivity
 import com.ngocquanlychatbot.ui.bot.dialog.CreateBotDialog
-import com.ngocquanlychatbot.utils.SecurePrefs  // ← import SecurePrefs
+import com.ngocquanlychatbot.ui.stats.BotStatsActivity  // ← thêm import
+import com.ngocquanlychatbot.utils.SecurePrefs
 
 class BotListActivity : AppCompatActivity() {
 
@@ -30,7 +31,6 @@ class BotListActivity : AppCompatActivity() {
         binding = ActivityBotListBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // FIX: đọc token từ SecurePrefs thay vì SharedPreferences plain text
         currentToken = getToken()
 
         viewModel = ViewModelProvider(
@@ -67,14 +67,16 @@ class BotListActivity : AppCompatActivity() {
     // ── RecyclerView ──────────────────────────────────
     private fun setupRecyclerView() {
         adapter = BotAdapter(
-            onToggleClick = { bot, isChecked ->
+            onToggleClick      = { bot, isChecked ->
                 currentToken?.let { token ->
                     if (isChecked) viewModel.toggleBot(token, bot)
                     else showToggleConfirmation(bot, token)
                 }
             },
-            onDeleteClick  = { bot -> showDeleteConfirmation(bot) },
-            onViewHistoryClick = { bot -> openChatHistory(bot) }
+            onDeleteClick      = { bot -> showDeleteConfirmation(bot) },
+            onViewHistoryClick = { bot -> openChatHistory(bot) },
+            // FIX: thêm callback cho nút thống kê
+            onViewStatsClick   = { bot -> openBotStats(bot) }
         )
 
         binding.recyclerViewBots.apply {
@@ -100,14 +102,13 @@ class BotListActivity : AppCompatActivity() {
     // ── Observe ───────────────────────────────────────
     private fun observeViewModel() {
         viewModel.bots.observe(this) { bots ->
-            originalBotList           = bots
+            originalBotList               = bots
             adapter.submitList(bots)
             binding.layoutEmpty.isVisible = bots.isEmpty()
         }
 
         viewModel.isLoading.observe(this) { isLoading ->
-            binding.progressBar.isVisible           = isLoading
-            binding.swipeRefreshLayout.isRefreshing = isLoading && false
+            binding.progressBar.isVisible = isLoading
             if (!isLoading) binding.swipeRefreshLayout.isRefreshing = false
         }
 
@@ -146,13 +147,18 @@ class BotListActivity : AppCompatActivity() {
         currentToken?.let { viewModel.loadBots(it) }
     }
 
-    // ── Chat History ──────────────────────────────────
+    // ── Navigation ────────────────────────────────────
     private fun openChatHistory(bot: Bot) {
         startActivity(Intent(this, ChatHistoryActivity::class.java).apply {
             putExtra("BOT_ID",   bot.id)
             putExtra("BOT_NAME", bot.name)
             putExtra("PAGE_ID",  bot.page_id)
         })
+    }
+
+    // FIX: hàm mở màn hình thống kê
+    private fun openBotStats(bot: Bot) {
+        startActivity(BotStatsActivity.newIntent(this, bot.id, bot.name))
     }
 
     // ── Dialogs ───────────────────────────────────────
@@ -187,7 +193,6 @@ class BotListActivity : AppCompatActivity() {
 
     // ── Auth ──────────────────────────────────────────
     private fun performLogout() {
-        // FIX: xóa SecurePrefs thay vì SharedPreferences plain text
         SecurePrefs.clear(this)
         Toast.makeText(this, "Đã đăng xuất thành công", Toast.LENGTH_SHORT).show()
         goToLogin()
@@ -200,10 +205,7 @@ class BotListActivity : AppCompatActivity() {
         finish()
     }
 
-    private fun getToken(): String? {
-        // FIX: đọc từ SecurePrefs thay vì SharedPreferences plain text
-        return SecurePrefs.getToken(this)
-    }
+    private fun getToken(): String? = SecurePrefs.getToken(this)
 
     // ── Lifecycle ─────────────────────────────────────
     override fun onResume() {

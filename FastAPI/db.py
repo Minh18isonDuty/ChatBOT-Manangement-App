@@ -378,3 +378,106 @@ if __name__ == "__main__":
     init_database()
     run_migrations()
     print("✅ Done!")
+
+# =====================================================
+# THÊM VÀO CUỐI file db.py
+# Statistics functions cho Dashboard
+# =====================================================
+
+def get_stats_overview(page_id: str) -> Dict[str, Any]:
+    """
+    Thống kê tổng quan của một bot.
+    Trả về: tổng tin nhắn, số user unique, tin nhắn hôm nay.
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+
+        # Tổng tin nhắn
+        cur.execute("""
+            SELECT COUNT(*) FROM messages WHERE page_id = ?
+        """, (page_id,))
+        total_messages = cur.fetchone()[0]
+
+        # Số user unique (không tính bot)
+        cur.execute("""
+            SELECT COUNT(DISTINCT sender_id) 
+            FROM messages 
+            WHERE page_id = ? AND is_from_user = 1
+        """, (page_id,))
+        unique_users = cur.fetchone()[0]
+
+        # Tin nhắn hôm nay
+        cur.execute("""
+            SELECT COUNT(*) FROM messages 
+            WHERE page_id = ? 
+            AND DATE(created_at) = DATE('now', 'localtime')
+        """, (page_id,))
+        today_messages = cur.fetchone()[0]
+
+        # Tin nhắn từ user (không tính bot reply)
+        cur.execute("""
+            SELECT COUNT(*) FROM messages 
+            WHERE page_id = ? AND is_from_user = 1
+        """, (page_id,))
+        user_messages = cur.fetchone()[0]
+
+        return {
+            "total_messages": total_messages,
+            "unique_users":   unique_users,
+            "today_messages": today_messages,
+            "user_messages":  user_messages,
+            "bot_messages":   total_messages - user_messages
+        }
+
+
+def get_messages_by_day(page_id: str, days: int = 7) -> List[Dict[str, Any]]:
+    """
+    Số tin nhắn theo ngày trong N ngày gần nhất.
+    Dùng để vẽ bar chart trên Android.
+    Trả về list [{"date": "2024-01-15", "count": 42}, ...]
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                DATE(created_at, 'localtime') AS date,
+                COUNT(*) AS count
+            FROM messages
+            WHERE page_id = ?
+              AND created_at >= DATE('now', 'localtime', ? || ' days')
+            GROUP BY DATE(created_at, 'localtime')
+            ORDER BY date ASC
+        """, (page_id, f"-{days}"))
+        return [{"date": row[0], "count": row[1]} for row in cur.fetchall()]
+
+
+def get_messages_by_hour(page_id: str) -> List[Dict[str, Any]]:
+    """
+    Phân bố tin nhắn theo giờ trong ngày (0-23).
+    Dùng để xác định giờ cao điểm.
+    Trả về list [{"hour": 9, "count": 15}, ...]
+    """
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour,
+                COUNT(*) AS count
+            FROM messages
+            WHERE page_id = ? AND is_from_user = 1
+            GROUP BY hour
+            ORDER BY hour ASC
+        """, (page_id,))
+        return [{"hour": row[0], "count": row[1]} for row in cur.fetchall()]
+
+
+def get_peak_hour(page_id: str) -> Dict[str, Any]:
+    """
+    Lấy giờ cao điểm — giờ có nhiều tin nhắn nhất.
+    Trả về {"peak_hour": 14, "count": 38}
+    """
+    hours = get_messages_by_hour(page_id)
+    if not hours:
+        return {"peak_hour": 0, "count": 0}
+    peak = max(hours, key=lambda x: x["count"])
+    return {"peak_hour": peak["hour"], "count": peak["count"]}

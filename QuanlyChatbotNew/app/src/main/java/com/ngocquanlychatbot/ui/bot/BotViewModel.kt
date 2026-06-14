@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.ngocquanlychatbot.data.model.Bot
+import com.ngocquanlychatbot.data.model.BotStatsResponse
 import com.ngocquanlychatbot.data.model.ChatHistoryResponse
 import com.ngocquanlychatbot.data.repository.BotRepository
 import kotlinx.coroutines.launch
@@ -15,6 +16,9 @@ class BotViewModel(private val repository: BotRepository) : ViewModel() {
     // Danh sách bot
     private val _bots = MutableLiveData<List<Bot>>()
     val bots: LiveData<List<Bot>> = _bots
+
+    private val _botStats = MutableLiveData<BotStatsResponse>()
+    val botStats: LiveData<BotStatsResponse> = _botStats
 
     // Lịch sử chat
     private val _chatHistory = MutableLiveData<ChatHistoryResponse>()
@@ -106,6 +110,23 @@ class BotViewModel(private val repository: BotRepository) : ViewModel() {
     fun clearMessages() {
         _errorMessage.value = null
         _successMessage.value = null
+    }
+
+    fun getBotStats(token: String, botId: Int) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            _errorMessage.value = null
+
+            val result = repository.getBotStats(token, botId)
+
+            result.onSuccess { stats ->
+                _botStats.value = stats
+            }.onFailure { exception ->
+                _errorMessage.value = "Không thể tải thống kê: ${exception.message}"
+            }
+
+            _isLoading.value = false
+        }
     }
 
     // ====================== FACTORY ======================

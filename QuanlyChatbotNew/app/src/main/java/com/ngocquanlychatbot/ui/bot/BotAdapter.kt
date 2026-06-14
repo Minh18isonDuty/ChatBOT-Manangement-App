@@ -13,7 +13,8 @@ import com.ngocquanlychatbot.databinding.ItemBotBinding
 class BotAdapter(
     private val onToggleClick: (Bot, Boolean) -> Unit,      // Toggle bật/tắt
     private val onDeleteClick: (Bot) -> Unit,               // Xóa bot
-    private val onViewHistoryClick: (Bot) -> Unit           // Xem lịch sử chat (mới)
+    private val onViewHistoryClick: (Bot) -> Unit,           // Xem lịch sử chat (mới)
+    private val onViewStatsClick: (Bot) -> Unit             // Xem thống kê (mới)
 ) : ListAdapter<Bot, BotAdapter.BotViewHolder>(BotDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): BotViewHolder {
@@ -63,6 +64,7 @@ class BotAdapter(
             binding.btnDelete.setOnClickListener {
                 onDeleteClick(bot)
             }
+            binding.btnStats.setOnClickListener { onViewStatsClick(bot) }
         }
     }
 

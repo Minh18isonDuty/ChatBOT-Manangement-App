@@ -51,3 +51,34 @@ data class TypingRequest(
     val recipient_id: String,   // Facebook sender ID
     val is_typing: Boolean      // true = hiện "...", false = ẩn
 )
+
+// =====================================================
+// THÊM VÀO CUỐI file Bot.kt
+// =====================================================
+
+data class StatsOverview(
+    val total_messages: Int,
+    val unique_users:   Int,
+    val today_messages: Int,
+    val user_messages:  Int,
+    val bot_messages:   Int
+)
+
+data class DailyCount(
+    val date:  String,  // "2024-01-15"
+    val count: Int
+)
+
+data class HourlyCount(
+    val hour:  Int,     // 0-23
+    val count: Int
+)
+
+data class BotStatsResponse(
+    val page_id:     String,
+    val overview:    StatsOverview,
+    val daily_7days: List<DailyCount>,
+    val hourly:      List<HourlyCount>,
+    val peak_hour:   Int,
+    val peak_count:  Int
+)

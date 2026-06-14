@@ -6,13 +6,13 @@ import retrofit2.http.*
 
 interface ApiService {
 
-    // ── Auth ──────────────────────────────────────
+    // ── Auth ──────────────────────────────────────────
     @POST("/login")
     suspend fun login(
         @Body request: LoginRequest
     ): Response<LoginResponse>
 
-    // ── Bot CRUD ──────────────────────────────────
+    // ── Bot CRUD ──────────────────────────────────────
     @GET("/bots")
     suspend fun getBots(
         @Header("Authorization") authorization: String
@@ -37,18 +37,22 @@ interface ApiService {
         @Path("bot_id") botId: Int
     ): Response<Any>
 
-    // ── Chat History ──────────────────────────────
+    // ── Chat History ──────────────────────────────────
     @GET("/bots/{bot_id}/history")
     suspend fun getChatHistory(
         @Header("Authorization") authorization: String,
         @Path("bot_id") botId: Int
     ): Response<ChatHistoryResponse>
 
-    // ── Typing Indicator ──────────────────────────
-    // Trigger backend gửi "typing_on/off" về Facebook.
-    // Thường KHÔNG cần gọi từ Android vì backend tự xử lý
-    // trong webhook flow. Endpoint này dùng để test thủ công
-    // hoặc trigger từ admin dashboard nếu cần.
+    // ── Statistics ────────────────────────────────────
+    // FIX: thêm endpoint này — BotRepository.getBotStats() gọi vào đây
+    @GET("/bots/{bot_id}/stats")
+    suspend fun getBotStats(
+        @Header("Authorization") authorization: String,
+        @Path("bot_id") botId: Int
+    ): Response<BotStatsResponse>
+
+    // ── Typing Indicator ──────────────────────────────
     @POST("/bots/{bot_id}/typing")
     suspend fun sendTypingIndicator(
         @Header("Authorization") authorization: String,
